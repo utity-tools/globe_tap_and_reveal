@@ -1,19 +1,28 @@
 import { useState } from 'react'
+import type { FormEvent, ChangeEvent } from 'react'
+import type L from 'leaflet'
 import { supabase } from '../lib/supabase'
+import type { Pin } from '../types'
 
-export default function PinForm({ latlng, onClose, onSaved }) {
+interface PinFormProps {
+  latlng: L.LatLng
+  onClose: () => void
+  onSaved: (pin: Pin) => void
+}
+
+export default function PinForm({ latlng, onClose, onSaved }: PinFormProps) {
   const [title, setTitle] = useState('')
   const [comment, setComment] = useState('')
-  const [photo, setPhoto] = useState(null)
+  const [photo, setPhoto] = useState<File | null>(null)
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState(null)
+  const [error, setError] = useState<string | null>(null)
 
-  async function handleSubmit(e) {
+  async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
     setLoading(true)
     setError(null)
 
-    let photo_url = null
+    let photo_url: string | null = null
 
     if (photo) {
       const ext = photo.name.split('.').pop()
@@ -44,8 +53,12 @@ export default function PinForm({ latlng, onClose, onSaved }) {
     if (insertError) {
       setError(insertError.message)
     } else {
-      onSaved(data)
+      onSaved(data as Pin)
     }
+  }
+
+  function handleFileChange(e: ChangeEvent<HTMLInputElement>) {
+    setPhoto(e.target.files?.[0] ?? null)
   }
 
   return (
@@ -88,7 +101,7 @@ export default function PinForm({ latlng, onClose, onSaved }) {
             <input
               type="file"
               accept="image/*"
-              onChange={(e) => setPhoto(e.target.files?.[0] ?? null)}
+              onChange={handleFileChange}
               className="w-full text-xs text-[#6b7280] cursor-pointer
                 file:mr-2 file:py-1 file:px-2 file:rounded file:border-0
                 file:bg-[#2a2a3a] file:text-[#a78bfa] file:text-xs file:cursor-pointer

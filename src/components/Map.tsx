@@ -1,21 +1,34 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { MapContainer, TileLayer, GeoJSON, Marker, Popup, useMapEvents } from 'react-leaflet'
+import type { FeatureCollection, Feature, Geometry } from 'geojson'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import { supabase } from '../lib/supabase'
+import type { Pin } from '../types'
 import PinForm from './PinForm'
 import PinPopup from './PinPopup'
 
 const COUNTRIES_URL =
   'https://raw.githubusercontent.com/datasets/geo-countries/master/data/countries.geojson'
 
+// ── Country feature shape ─────────────────────────────────
+interface CountryProps {
+  ADMIN: string
+  ISO_A3: string
+  ISO_A2: string
+}
+
+type CountryFeature = Feature<Geometry, CountryProps>
+
 // ── Styles ────────────────────────────────────────────────
-const getCountryStyle = (visited) => ({
-  fillColor: visited ? '#7c3aed' : '#1e293b',
-  fillOpacity: visited ? 0.6 : 0.3,
-  color: visited ? '#a78bfa' : '#2d3f55',
-  weight: visited ? 1 : 0.5,
-})
+function getCountryStyle(visited: boolean): L.PathOptions {
+  return {
+    fillColor: visited ? '#7c3aed' : '#1e293b',
+    fillOpacity: visited ? 0.6 : 0.3,
+    color: visited ? '#a78bfa' : '#2d3f55',
+    weight: visited ? 1 : 0.5,
+  }
+}
 
 const pinIcon = L.divIcon({
   html: `<div style="
@@ -31,62 +44,68 @@ const pinIcon = L.divIcon({
 })
 
 // ── Long-press / right-click handler ─────────────────────
-function MapInteractions({ onLongPress }) {
-  const timer = useRef(null)
-  const startPixel = useRef(null)
-  const startLatlng = useRef(null)
+interface MapInteractionsProps {
+  onLongPress: (latlng: L.LatLng) => void
+}
+
+function MapInteractions({ onLongPress }: MapInteractionsProps) {
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const startPixel = useRef<{ x: number; y: number } | null>(null)
+  const startLatlng = useRef<L.LatLng | null>(null)
 
   useMapEvents({
-    // Right-click on desktop / long-press on mobile
     contextmenu(e) {
       e.originalEvent.preventDefault()
-      clearTimeout(timer.current)
+      if (timer.current) clearTimeout(timer.current)
       onLongPress(e.latlng)
     },
-    // Long hold on desktop (700 ms, no drag)
     mousedown(e) {
       if (e.originalEvent.button !== 0) return
       startPixel.current = { x: e.originalEvent.clientX, y: e.originalEvent.clientY }
       startLatlng.current = e.latlng
-      timer.current = setTimeout(() => onLongPress(startLatlng.current), 700)
+      timer.current = setTimeout(() => {
+        if (startLatlng.current) onLongPress(startLatlng.current)
+      }, 700)
     },
     mouseup() {
-      clearTimeout(timer.current)
+      if (timer.current) clearTimeout(timer.current)
       startPixel.current = null
     },
     mousemove(e) {
       if (!startPixel.current) return
       const dx = e.originalEvent.clientX - startPixel.current.x
       const dy = e.originalEvent.clientY - startPixel.current.y
-      if (dx * dx + dy * dy > 25) clearTimeout(timer.current) // >5 px → cancel
+      if (dx * dx + dy * dy > 25) {
+        if (timer.current) clearTimeout(timer.current)
+      }
     },
     dragstart() {
-      clearTimeout(timer.current)
+      if (timer.current) clearTimeout(timer.current)
       startPixel.current = null
     },
   })
+
   return null
 }
 
 // ── Main component ────────────────────────────────────────
 export default function Map() {
-  const [geoData, setGeoData] = useState(null)
-  const [visitedSet, setVisitedSet] = useState(new Set())
-  const [pins, setPins] = useState([])
-  const [pinForm, setPinForm] = useState(null) // latlng | null
+  const [geoData, setGeoData] = useState<FeatureCollection | null>(null)
+  const [visitedSet, setVisitedSet] = useState<Set<string>>(new Set())
+  const [pins, setPins] = useState<Pin[]>([])
+  const [pinForm, setPinForm] = useState<L.LatLng | null>(null)
 
-  const geoJsonRef = useRef(null)
-  // Always-fresh refs — avoids stale closures in Leaflet callbacks
-  const visitedRef = useRef(new Set())
-  const clickHandlerRef = useRef(null)
+  const geoJsonRef = useRef<L.GeoJSON | null>(null)
+  const visitedRef = useRef<Set<string>>(new Set())
 
-  // ── Sync visitedRef + update map layer styles ──────────
+  // ── Sync visitedRef + update layer styles ──────────────
   useEffect(() => {
     visitedRef.current = visitedSet
     if (!geoJsonRef.current) return
     geoJsonRef.current.eachLayer((layer) => {
-      const code = layer.feature?.properties?.ISO_A3
-      if (code) layer.setStyle(getCountryStyle(visitedSet.has(code)))
+      const l = layer as L.Path & { feature?: CountryFeature }
+      const code = l.feature?.properties?.ISO_A3
+      if (code) l.setStyle(getCountryStyle(visitedSet.has(code)))
     })
   }, [visitedSet])
 
@@ -94,7 +113,7 @@ export default function Map() {
   useEffect(() => {
     fetch(COUNTRIES_URL)
       .then((r) => r.json())
-      .then(setGeoData)
+      .then((data: FeatureCollection) => setGeoData(data))
   }, [])
 
   // ── Load initial Supabase data ─────────────────────────
@@ -103,39 +122,47 @@ export default function Map() {
       .from('visited_countries')
       .select('country_code')
       .then(({ data }) => {
-        if (data) setVisitedSet(new Set(data.map((r) => r.country_code)))
+        if (data) setVisitedSet(new Set(data.map((r) => r.country_code as string)))
       })
 
     supabase
       .from('pins')
       .select('*')
       .then(({ data }) => {
-        if (data) setPins(data)
+        if (data) setPins(data as Pin[])
       })
   }, [])
 
-  // ── Realtime: pins channel ─────────────────────────────
+  // ── Realtime: pins ─────────────────────────────────────
   useEffect(() => {
     const channel = supabase
       .channel('pins-realtime')
-      .on(
+      .on<Pin>(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'pins' },
-        ({ eventType, new: n, old: o }) => {
-          if (eventType === 'INSERT') setPins((prev) => [...prev, n])
-          else if (eventType === 'DELETE') setPins((prev) => prev.filter((p) => p.id !== o.id))
-          else if (eventType === 'UPDATE') setPins((prev) => prev.map((p) => (p.id === n.id ? n : p)))
+        (payload) => {
+          if (payload.eventType === 'INSERT') {
+            setPins((prev) => [...prev, payload.new])
+          } else if (payload.eventType === 'DELETE') {
+            const deleted = payload.old as Pick<Pin, 'id'>
+            setPins((prev) => prev.filter((p) => p.id !== deleted.id))
+          } else if (payload.eventType === 'UPDATE') {
+            setPins((prev) =>
+              prev.map((p) => (p.id === payload.new.id ? payload.new : p))
+            )
+          }
         }
       )
       .subscribe()
 
-    return () => supabase.removeChannel(channel)
+    return () => {
+      supabase.removeChannel(channel)
+    }
   }, [])
 
-  // ── Click country → toggle visited ────────────────────
-  const handleCountryClick = useCallback(async (feature) => {
-    const code = feature.properties.ISO_A3
-    const name = feature.properties.ADMIN
+  // ── Toggle visited country ─────────────────────────────
+  const handleCountryClick = useCallback(async (feature: CountryFeature) => {
+    const { ISO_A3: code, ADMIN: name } = feature.properties
 
     if (visitedRef.current.has(code)) {
       await supabase.from('visited_countries').delete().eq('country_code', code)
@@ -152,31 +179,35 @@ export default function Map() {
     }
   }, [])
 
-  // Keep ref fresh so Leaflet callbacks never see a stale closure
-  clickHandlerRef.current = handleCountryClick
+  // ── GeoJSON per-feature setup (stable, uses *Ref) ─────
+  const onEachCountry = useCallback((feature: Feature, layer: L.Layer) => {
+    const typedFeature = feature as CountryFeature
+    const path = layer as L.Path
 
-  // ── GeoJSON callbacks (stable refs, use *Ref inside) ──
-  const onEachCountry = useCallback((feature, layer) => {
-    layer.on({
-      // Stop propagation so long-press timer doesn't fire on country clicks
-      mousedown: (e) => L.DomEvent.stopPropagation(e),
-      click: () => clickHandlerRef.current(feature),
+    path.on({
+      mousedown: (e: L.LeafletMouseEvent) => {
+        L.DomEvent.stopPropagation(e.originalEvent)
+      },
+      click: () => handleCountryClick(typedFeature),
       mouseover: () =>
-        layer.setStyle({
-          fillOpacity: visitedRef.current.has(feature.properties.ISO_A3) ? 0.85 : 0.5,
+        path.setStyle({
+          fillOpacity: visitedRef.current.has(typedFeature.properties.ISO_A3) ? 0.85 : 0.5,
         }),
       mouseout: () =>
-        layer.setStyle(getCountryStyle(visitedRef.current.has(feature.properties.ISO_A3))),
+        path.setStyle(getCountryStyle(visitedRef.current.has(typedFeature.properties.ISO_A3))),
     })
-  }, [])
+  }, [handleCountryClick])
 
   const countryStyle = useCallback(
-    (feature) => getCountryStyle(visitedRef.current.has(feature.properties.ISO_A3)),
+    (feature?: Feature): L.PathOptions =>
+      getCountryStyle(
+        visitedRef.current.has((feature as CountryFeature | undefined)?.properties?.ISO_A3 ?? '')
+      ),
     []
   )
 
   // ── Delete pin ─────────────────────────────────────────
-  const handleDeletePin = useCallback(async (id) => {
+  const handleDeletePin = useCallback(async (id: string) => {
     await supabase.from('pins').delete().eq('id', id)
     setPins((prev) => prev.filter((p) => p.id !== id))
   }, [])
