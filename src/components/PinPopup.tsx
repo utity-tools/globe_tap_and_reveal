@@ -10,18 +10,18 @@ interface PinPopupProps {
 
 const styles = {
   wrapper: { minWidth: '170px', maxWidth: '230px', fontFamily: 'ui-monospace, monospace' } satisfies CSSProperties,
-  photo: { width: '100%', height: '110px', objectFit: 'cover', borderRadius: '4px', marginBottom: '8px', display: 'block' } satisfies CSSProperties,
-  title: { color: '#f3f4f6', fontWeight: '500', fontSize: '13px', margin: '0 0 4px' } satisfies CSSProperties,
-  comment: { color: '#9ca3af', fontSize: '11px', margin: '0 0 6px', lineHeight: '1.4' } satisfies CSSProperties,
-  coords: { color: '#374151', fontSize: '10px', margin: '0 0 10px', letterSpacing: '0.02em' } satisfies CSSProperties,
+  photo: { width: '100%', height: '110px', objectFit: 'cover', borderRadius: '6px', marginBottom: '8px', display: 'block' } satisfies CSSProperties,
+  title: { color: '#3C3528', fontWeight: '600', fontSize: '13px', margin: '0 0 4px' } satisfies CSSProperties,
+  comment: { color: '#7A6F60', fontSize: '11px', margin: '0 0 6px', lineHeight: '1.4' } satisfies CSSProperties,
+  coords: { color: '#A09080', fontSize: '10px', margin: '0 0 10px', letterSpacing: '0.02em' } satisfies CSSProperties,
   deleteBtn: {
     display: 'block',
     width: '100%',
     padding: '4px 0',
     background: 'transparent',
-    border: '1px solid #3f1f1f',
-    borderRadius: '4px',
-    color: '#f87171',
+    border: '1px solid #E0CFC0',
+    borderRadius: '6px',
+    color: '#C0624A',
     fontSize: '11px',
     cursor: 'pointer',
     fontFamily: 'inherit',
@@ -49,7 +49,7 @@ export default function PinPopup({ pin, onDelete }: PinPopupProps) {
         onClick={() => onDelete(pin.id)}
         style={styles.deleteBtn}
         onMouseOver={(e) => {
-          (e.currentTarget as HTMLButtonElement).style.background = '#2d1515'
+          (e.currentTarget as HTMLButtonElement).style.background = '#FAF0EB'
         }}
         onMouseOut={(e) => {
           (e.currentTarget as HTMLButtonElement).style.background = 'transparent'

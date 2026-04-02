@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { MapContainer, TileLayer, GeoJSON, Marker, Popup, useMapEvents } from 'react-leaflet'
+import { MapContainer, GeoJSON, Marker, Popup, useMapEvents, useMap } from 'react-leaflet'
 import type { FeatureCollection, Feature, Geometry } from 'geojson'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
@@ -7,6 +7,8 @@ import { supabase } from '../lib/supabase'
 import type { Pin } from '../types'
 import PinForm from './PinForm'
 import PinPopup from './PinPopup'
+import Ledger from './Ledger'
+import UserNotch from './UserNotch'
 
 const COUNTRIES_URL =
   'https://raw.githubusercontent.com/datasets/geo-countries/master/data/countries.geojson'
@@ -20,28 +22,79 @@ interface CountryProps {
 
 type CountryFeature = Feature<Geometry, CountryProps>
 
-// ── Styles ────────────────────────────────────────────────
-function getCountryStyle(visited: boolean): L.PathOptions {
+// ── Illustrated flat palette ──────────────────────────────
+const PALETTE = [
+  '#C7D8A1', // light chartreuse
+  '#84C27D', // medium green
+  '#6BAE6B', // forest green
+  '#4A9E56', // dark tropical green
+  '#EDEA8E', // desert yellow
+  '#B8D48C', // sage green
+  '#A0C97A', // lime green
+]
+
+function hashCode(str: string): number {
+  let h = 0
+  for (let i = 0; i < str.length; i++) h = (Math.imul(31, h) + str.charCodeAt(i)) | 0
+  return Math.abs(h)
+}
+
+// ── Point-in-polygon (ray casting) ───────────────────────
+function pointInRing(lng: number, lat: number, ring: number[][]): boolean {
+  let inside = false
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i]
+    const [xj, yj] = ring[j]
+    if ((yi > lat) !== (yj > lat) && lng < ((xj - xi) * (lat - yi)) / (yj - yi) + xi)
+      inside = !inside
+  }
+  return inside
+}
+
+function findCountryAtPoint(lat: number, lng: number, data: FeatureCollection): CountryFeature | null {
+  for (const feature of data.features) {
+    const f = feature as CountryFeature
+    const { type, coordinates } = f.geometry as { type: string; coordinates: unknown }
+    if (type === 'Polygon') {
+      if (pointInRing(lng, lat, (coordinates as number[][][])[0])) return f
+    } else if (type === 'MultiPolygon') {
+      for (const poly of coordinates as number[][][][]) {
+        if (pointInRing(lng, lat, poly[0])) return f
+      }
+    }
+  }
+  return null
+}
+
+function getCountryStyle(code: string, visited: boolean): L.PathOptions {
+  const fill = PALETTE[hashCode(code) % PALETTE.length]
   return {
-    fillColor: visited ? '#7c3aed' : '#1e293b',
-    fillOpacity: visited ? 0.6 : 0.3,
-    color: visited ? '#a78bfa' : '#2d3f55',
-    weight: visited ? 1 : 0.5,
+    fillColor: fill,
+    fillOpacity: 1,
+    color: visited ? '#D4734A' : '#5C8C55',
+    weight: visited ? 2 : 0.7,
   }
 }
 
 const pinIcon = L.divIcon({
   html: `<div style="
-    width:10px;height:10px;
-    background:#7c3aed;
-    border:2px solid #a78bfa;
+    width:12px;height:12px;
+    background:#E07A3C;
+    border:2.5px solid #fff;
     border-radius:50%;
-    box-shadow:0 0 8px rgba(124,58,237,0.9),0 0 16px rgba(124,58,237,0.4)
+    box-shadow:0 2px 6px rgba(0,0,0,0.25)
   "></div>`,
   className: '',
-  iconSize: [10, 10],
-  iconAnchor: [5, 5],
+  iconSize: [12, 12],
+  iconAnchor: [6, 6],
 })
+
+// ── Capture map instance for flyTo ───────────────────────
+function MapController({ mapRef }: { mapRef: { current: L.Map | null } }) {
+  const map = useMap()
+  useEffect(() => { mapRef.current = map }, [map, mapRef])
+  return null
+}
 
 // ── Long-press / right-click handler ─────────────────────
 interface MapInteractionsProps {
@@ -97,6 +150,9 @@ export default function Map() {
 
   const geoJsonRef = useRef<L.GeoJSON | null>(null)
   const visitedRef = useRef<Set<string>>(new Set())
+  const mapRef = useRef<L.Map | null>(null)
+  const markersRef = useRef<Record<string, L.Marker>>({})
+  const [ledgerOpen, setLedgerOpen] = useState(false)
 
   // ── Sync visitedRef + update layer styles ──────────────
   useEffect(() => {
@@ -104,8 +160,8 @@ export default function Map() {
     if (!geoJsonRef.current) return
     geoJsonRef.current.eachLayer((layer) => {
       const l = layer as L.Path & { feature?: CountryFeature }
-      const code = l.feature?.properties?.ISO_A3
-      if (code) l.setStyle(getCountryStyle(visitedSet.has(code)))
+      const code = l.feature?.properties?.ISO_A3 ?? ''
+      if (code) l.setStyle(getCountryStyle(code, visitedSet.has(code)))
     })
   }, [visitedSet])
 
@@ -160,107 +216,158 @@ export default function Map() {
     }
   }, [])
 
-  // ── Toggle visited country ─────────────────────────────
-  const handleCountryClick = useCallback(async (feature: CountryFeature) => {
-    const { ISO_A3: code, ADMIN: name } = feature.properties
-
-    if (visitedRef.current.has(code)) {
-      await supabase.from('visited_countries').delete().eq('country_code', code)
-      setVisitedSet((prev) => {
-        const next = new Set(prev)
-        next.delete(code)
-        return next
-      })
-    } else {
-      const { error } = await supabase
-        .from('visited_countries')
-        .insert({ country_code: code, country_name: name })
-      if (!error) setVisitedSet((prev) => new Set([...prev, code]))
-    }
-  }, [])
-
-  // ── GeoJSON per-feature setup (stable, uses *Ref) ─────
+  // ── GeoJSON per-feature setup ──────────────────────────
   const onEachCountry = useCallback((feature: Feature, layer: L.Layer) => {
     const typedFeature = feature as CountryFeature
     const path = layer as L.Path
+    const code = typedFeature.properties.ISO_A3
 
     path.on({
-      mousedown: (e: L.LeafletMouseEvent) => {
-        L.DomEvent.stopPropagation(e.originalEvent)
-      },
-      click: () => handleCountryClick(typedFeature),
-      mouseover: () =>
-        path.setStyle({
-          fillOpacity: visitedRef.current.has(typedFeature.properties.ISO_A3) ? 0.85 : 0.5,
-        }),
-      mouseout: () =>
-        path.setStyle(getCountryStyle(visitedRef.current.has(typedFeature.properties.ISO_A3))),
+      mouseover: () => path.setStyle({ fillOpacity: 0.7 }),
+      mouseout: () => path.setStyle(getCountryStyle(code, visitedRef.current.has(code))),
     })
-  }, [handleCountryClick])
+  }, [])
 
   const countryStyle = useCallback(
-    (feature?: Feature): L.PathOptions =>
-      getCountryStyle(
-        visitedRef.current.has((feature as CountryFeature | undefined)?.properties?.ISO_A3 ?? '')
-      ),
+    (feature?: Feature): L.PathOptions => {
+      const code = (feature as CountryFeature | undefined)?.properties?.ISO_A3 ?? ''
+      return getCountryStyle(code, visitedRef.current.has(code))
+    },
     []
   )
 
-  // ── Delete pin ─────────────────────────────────────────
+  // ── Delete pin + unvisit country if no pins remain ────
   const handleDeletePin = useCallback(async (id: string) => {
+    const pin = pins.find((p) => p.id === id)
     await supabase.from('pins').delete().eq('id', id)
-    setPins((prev) => prev.filter((p) => p.id !== id))
-  }, [])
+    const remaining = pins.filter((p) => p.id !== id)
+    setPins(remaining)
+
+    if (pin && geoData) {
+      const country = findCountryAtPoint(pin.lat, pin.lng, geoData)
+      if (country) {
+        const code = country.properties.ISO_A3
+        const stillHasPin = remaining.some((p) => {
+          const c = findCountryAtPoint(p.lat, p.lng, geoData)
+          return c?.properties.ISO_A3 === code
+        })
+        if (!stillHasPin) {
+          await supabase.from('visited_countries').delete().eq('country_code', code)
+          setVisitedSet((prev) => {
+            const next = new Set(prev)
+            next.delete(code)
+            return next
+          })
+        }
+      }
+    }
+  }, [pins, geoData])
 
   return (
-    <div className="relative w-full h-screen bg-[#0a0a0f]">
-      <MapContainer
-        center={[20, 0]}
-        zoom={2}
-        minZoom={2}
-        maxBounds={[[-90, -180], [90, 180]]}
-        maxBoundsViscosity={1.0}
-        className="w-full h-full"
-        zoomControl={false}
-        attributionControl={false}
+    <div className="relative w-full h-screen p-4" style={{ background: '#5B9FD4' }}>
+      {/* Card wrapper with rounded corners + inset shadow */}
+      <div
+        className="relative w-full h-full rounded-[2rem] overflow-hidden"
+        style={{
+          boxShadow: 'inset 0 2px 30px rgba(0,0,0,0.10), 0 8px 40px rgba(0,0,0,0.18)',
+        }}
       >
-        <TileLayer url="https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png" />
+        {/* Noise/paper texture overlay */}
+        <div
+          className="absolute inset-0 pointer-events-none z-[500]"
+          style={{
+            backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E")`,
+            opacity: 0.045,
+            mixBlendMode: 'multiply',
+          }}
+        />
 
-        {geoData && (
-          <GeoJSON
-            ref={geoJsonRef}
-            data={geoData}
-            style={countryStyle}
-            onEachFeature={onEachCountry}
-          />
-        )}
+        <MapContainer
+          center={[20, 0]}
+          zoom={2}
+          minZoom={2}
+          maxBounds={[[-90, -180], [90, 180]]}
+          maxBoundsViscosity={1.0}
+          className="w-full h-full"
+          zoomControl={true}
+          attributionControl={false}
+        >
+          {geoData && (
+            <GeoJSON
+              ref={geoJsonRef}
+              data={geoData}
+              style={countryStyle}
+              onEachFeature={onEachCountry}
+            />
+          )}
 
-        <MapInteractions onLongPress={setPinForm} />
+          <MapController mapRef={mapRef} />
+          <MapInteractions onLongPress={setPinForm} />
 
-        {pins.map((pin) => (
-          <Marker key={pin.id} position={[pin.lat, pin.lng]} icon={pinIcon}>
-            <Popup>
-              <PinPopup pin={pin} onDelete={handleDeletePin} />
-            </Popup>
-          </Marker>
-        ))}
-      </MapContainer>
+          {pins.map((pin) => (
+            <Marker
+              key={pin.id}
+              position={[pin.lat, pin.lng]}
+              icon={pinIcon}
+              ref={(m) => {
+                if (m) markersRef.current[pin.id] = m
+                else delete markersRef.current[pin.id]
+              }}
+            >
+              <Popup>
+                <PinPopup pin={pin} onDelete={handleDeletePin} />
+              </Popup>
+            </Marker>
+          ))}
+        </MapContainer>
 
-      {/* ── Stats HUD ── */}
-      <div className="absolute top-4 left-4 z-[1000] bg-black/60 border border-[#1e1e2a] rounded px-3 py-2 backdrop-blur-sm select-none">
-        <p className="font-mono text-xs leading-relaxed">
-          <span className="text-[#a78bfa] font-medium">{visitedSet.size}</span>
-          <span className="text-[#4b5563]"> countries · </span>
-          <span className="text-[#a78bfa] font-medium">{pins.length}</span>
-          <span className="text-[#4b5563]"> pins</span>
-        </p>
+        {/* ── Stats HUD ── */}
+        <div className="absolute top-4 left-4 z-[1000] rounded-xl px-3 py-2 select-none"
+          style={{ background: 'rgba(240,237,225,0.88)', border: '1px solid #D4CDB8', backdropFilter: 'blur(4px)', boxShadow: '0 2px 8px rgba(0,0,0,0.10)' }}>
+          <p className="font-mono text-xs leading-relaxed">
+            <span style={{ color: '#E07A3C', fontWeight: 600 }}>{visitedSet.size}</span>
+            <span style={{ color: '#8C7F6E' }}> países · </span>
+            <span style={{ color: '#E07A3C', fontWeight: 600 }}>{pins.length}</span>
+            <span style={{ color: '#8C7F6E' }}> pines</span>
+          </p>
+        </div>
+
+        {/* ── Help hint ── */}
+        <div className="absolute bottom-6 z-[1000] text-right select-none"
+          style={{ right: 'calc(3rem + 12px)' }}>
+          <p className="font-mono text-[10px]" style={{ color: 'rgba(60,90,55,0.55)' }}>click para marcar visitado</p>
+          <p className="font-mono text-[10px]" style={{ color: 'rgba(60,90,55,0.55)' }}>mantén para añadir pin</p>
+        </div>
       </div>
 
-      {/* ── Help hint ── */}
-      <div className="absolute bottom-4 right-4 z-[1000] text-right select-none">
-        <p className="font-mono text-[10px] text-[#374151]">click to mark visited</p>
-        <p className="font-mono text-[10px] text-[#374151]">right-click / hold to drop pin</p>
-      </div>
+      {/* ── Ledger FAB ── */}
+      <button
+        onClick={() => setLedgerOpen(true)}
+        className="absolute bottom-8 right-8 z-[2000] w-12 h-12 rounded-full flex items-center justify-center shadow-lg cursor-pointer"
+        style={{ background: '#F0EDE1', border: '1px solid #D4CDB8' }}
+        title="Diario de viajes"
+      >
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#E07A3C" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" />
+          <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
+        </svg>
+      </button>
+
+      {/* ── Ledger panel ── */}
+      {ledgerOpen && (
+        <Ledger
+          pins={pins}
+          onClose={() => setLedgerOpen(false)}
+          onFlyTo={(pin) => {
+            mapRef.current?.flyTo([pin.lat, pin.lng], 6, { duration: 1.2 })
+            mapRef.current?.once('moveend', () => {
+              markersRef.current[pin.id]?.openPopup()
+            })
+          }}
+        />
+      )}
+
+      <UserNotch unlockedCount={visitedSet.size} />
 
       {pinForm && (
         <PinForm
@@ -269,6 +376,16 @@ export default function Map() {
           onSaved={(pin) => {
             setPins((prev) => [...prev, pin])
             setPinForm(null)
+            if (geoData) {
+              const country = findCountryAtPoint(pin.lat, pin.lng, geoData)
+              if (country) {
+                const { ISO_A3: code, ADMIN: name } = country.properties
+                if (!visitedRef.current.has(code)) {
+                  supabase.from('visited_countries').insert({ country_code: code, country_name: name })
+                  setVisitedSet((prev) => new Set([...prev, code]))
+                }
+              }
+            }
           }}
         />
       )}
