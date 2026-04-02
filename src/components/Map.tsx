@@ -409,7 +409,6 @@ export default function Map({ user }: MapProps) {
       {pinForm && user && (
         <PinForm
           latlng={pinForm}
-          userId={user.id}
           onClose={() => setPinForm(null)}
           onSaved={(pin) => {
             setPins((prev) => [...prev, pin])

@@ -6,12 +6,11 @@ import type { Pin } from '../types'
 
 interface PinFormProps {
   latlng: L.LatLng
-  userId: string
   onClose: () => void
   onSaved: (pin: Pin) => void
 }
 
-export default function PinForm({ latlng, userId, onClose, onSaved }: PinFormProps) {
+export default function PinForm({ latlng, onClose, onSaved }: PinFormProps) {
   const [title, setTitle] = useState('')
   const [comment, setComment] = useState('')
   const [photo, setPhoto] = useState<File | null>(null)
