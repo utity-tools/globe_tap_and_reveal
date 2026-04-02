@@ -1,5 +1,6 @@
 export interface Pin {
   id: string
+  user_id: string
   lat: number
   lng: number
   title: string

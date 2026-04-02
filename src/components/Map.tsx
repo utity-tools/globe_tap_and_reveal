@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { MapContainer, GeoJSON, Marker, Popup, useMapEvents, useMap, ZoomControl } from 'react-leaflet'
 import type { FeatureCollection, Feature, Geometry } from 'geojson'
+import type { User } from '@supabase/supabase-js'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import { supabase } from '../lib/supabase'
@@ -9,6 +10,10 @@ import PinForm from './PinForm'
 import PinPopup from './PinPopup'
 import Ledger from './Ledger'
 import UserNotch from './UserNotch'
+
+interface MapProps {
+  user: User | null
+}
 
 const COUNTRIES_URL =
   'https://raw.githubusercontent.com/datasets/geo-countries/master/data/countries.geojson'
@@ -60,11 +65,11 @@ const TROPICAL = new Set([
 type Biome = 'tundra' | 'boreal' | 'arid' | 'tropical' | 'grassland'
 
 const BIOME_FILL: Record<Biome, string> = {
-  tundra:   '#E2ECE9',
-  boreal:   '#4A7D4E',
-  arid:     '#DDC597',
-  tropical: '#3B6E40',
-  grassland:'#C7D8A1',
+  tundra:   '#F8F9FA',  // nieve/glacial
+  boreal:   '#4A7D4E',  // bosque templado
+  arid:     '#DDC597',  // desierto/ocre
+  tropical: '#3B6E40',  // selva tropical
+  grassland:'#C7D8A1',  // praderas / default
 }
 
 
@@ -104,13 +109,15 @@ function findCountryAtPoint(lat: number, lng: number, data: FeatureCollection): 
 }
 
 function getCountryStyle(code: string, visited: boolean): L.PathOptions {
+  // Fill = biome only, never changes with pin state
   const biome = getBiome(code)
   return {
-    fillColor: BIOME_FILL[biome],
+    fillColor:  BIOME_FILL[biome],
     fillOpacity: 1,
+    // Border = the ONLY thing that reflects pin state
     color:     visited ? '#E55A51' : '#D8CDB2',
     weight:    visited ? 2 : 1,
-    opacity:   visited ? 1 : 0.5,
+    opacity:   1,
     dashArray: visited ? '6 4' : undefined,
   }
 }
@@ -175,7 +182,7 @@ function MapInteractions({ onLongPress }: MapInteractionsProps) {
 }
 
 // ── Main component ────────────────────────────────────────
-export default function Map() {
+export default function Map({ user }: MapProps) {
   const [geoData, setGeoData] = useState<FeatureCollection | null>(null)
   const [pins, setPins] = useState<Pin[]>([])
   const [pinForm, setPinForm] = useState<L.LatLng | null>(null)
@@ -186,6 +193,7 @@ export default function Map() {
   const mapRef = useRef<L.Map | null>(null)
   const markersRef = useRef<Record<string, L.Marker>>({})
   const [ledgerOpen, setLedgerOpen] = useState(false)
+  const [loginHint, setLoginHint] = useState(false)
 
   // ── Single source of truth: countries unlocked by pins ──
   const unlockedCountries = useMemo(() => {
@@ -215,24 +223,31 @@ export default function Map() {
       .then((data: FeatureCollection) => setGeoData(data))
   }, [])
 
-  // ── Load initial Supabase data — pins are the only truth ─
+  // ── Load pins — refetch when user changes ─────────────
   useEffect(() => {
+    setIsLoaded(false)
+    setPins([])
+    if (!user) { setIsLoaded(true); return }
+
     supabase
       .from('pins')
       .select('*')
+      .eq('user_id', user.id)
       .then(({ data }) => {
         if (data) setPins(data as Pin[])
         setIsLoaded(true)
       })
-  }, [])
+  }, [user?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Realtime: pins ─────────────────────────────────────
+  // ── Realtime: filtered to current user ────────────────
   useEffect(() => {
+    if (!user) return
+
     const channel = supabase
-      .channel('pins-realtime')
+      .channel(`pins-${user.id}`)
       .on<Pin>(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'pins' },
+        { event: '*', schema: 'public', table: 'pins', filter: `user_id=eq.${user.id}` },
         (payload) => {
           if (payload.eventType === 'INSERT') {
             setPins((prev) => [...prev, payload.new])
@@ -248,10 +263,8 @@ export default function Map() {
       )
       .subscribe()
 
-    return () => {
-      supabase.removeChannel(channel)
-    }
-  }, [])
+    return () => { supabase.removeChannel(channel) }
+  }, [user?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── GeoJSON per-feature setup ──────────────────────────
   const onEachCountry = useCallback((feature: Feature, layer: L.Layer) => {
@@ -329,6 +342,7 @@ export default function Map() {
           <ZoomControl position="bottomleft" />
           <MapController mapRef={mapRef} />
           <MapInteractions onLongPress={(latlng) => {
+            if (!user) { setLoginHint(true); setTimeout(() => setLoginHint(false), 2500); return }
             if (!geoData) return
             if (findCountryAtPoint(latlng.lat, latlng.lng, geoData) === null) return
             setPinForm(latlng)
@@ -354,9 +368,17 @@ export default function Map() {
         {/* ── Help hint ── */}
         <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-[1000] text-center select-none pointer-events-none">
           <p className="font-mono text-[10px]" style={{ color: 'rgba(60,90,55,0.45)' }}>
-            mantén pulsado el mapa para añadir un pin
+            {user ? 'mantén pulsado el mapa para añadir un pin' : 'inicia sesión para marcar tu viaje'}
           </p>
         </div>
+
+        {/* ── Login hint toast ── */}
+        {loginHint && (
+          <div className="absolute top-16 left-1/2 -translate-x-1/2 z-[2000] px-4 py-2 rounded-full pointer-events-none"
+            style={{ background: '#2C2C2C', boxShadow: '0 2px 12px rgba(0,0,0,0.4)' }}>
+            <p className="font-mono text-xs text-white">✈️ Inicia sesión para añadir pines</p>
+          </div>
+        )}
       </div>
 
       {/* ── Ledger FAB ── */}
@@ -382,11 +404,12 @@ export default function Map() {
         />
       )}
 
-      <UserNotch unlockedCount={unlockedCountries.size} pinsCount={pins.length} isLoaded={isLoaded} />
+      <UserNotch user={user} unlockedCount={unlockedCountries.size} pinsCount={pins.length} isLoaded={isLoaded} />
 
-      {pinForm && (
+      {pinForm && user && (
         <PinForm
           latlng={pinForm}
+          userId={user.id}
           onClose={() => setPinForm(null)}
           onSaved={(pin) => {
             setPins((prev) => [...prev, pin])

@@ -6,11 +6,12 @@ import type { Pin } from '../types'
 
 interface PinFormProps {
   latlng: L.LatLng
+  userId: string
   onClose: () => void
   onSaved: (pin: Pin) => void
 }
 
-export default function PinForm({ latlng, onClose, onSaved }: PinFormProps) {
+export default function PinForm({ latlng, userId, onClose, onSaved }: PinFormProps) {
   const [title, setTitle] = useState('')
   const [comment, setComment] = useState('')
   const [photo, setPhoto] = useState<File | null>(null)
@@ -22,14 +23,22 @@ export default function PinForm({ latlng, onClose, onSaved }: PinFormProps) {
     setLoading(true)
     setError(null)
 
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session) {
+      setError('No active session. Please sign in again.')
+      setLoading(false)
+      return
+    }
+    const uid = session.user.id
+
     let photo_url: string | null = null
 
     if (photo) {
       const ext = photo.name.split('.').pop()
-      const path = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`
+      const path = `${uid}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`
 
       const { error: uploadError } = await supabase.storage
-        .from('globe-photos')
+        .from('photos')
         .upload(path, photo, { contentType: photo.type })
 
       if (uploadError) {
@@ -38,13 +47,13 @@ export default function PinForm({ latlng, onClose, onSaved }: PinFormProps) {
         return
       }
 
-      const { data: urlData } = supabase.storage.from('globe-photos').getPublicUrl(path)
+      const { data: urlData } = supabase.storage.from('photos').getPublicUrl(path)
       photo_url = urlData.publicUrl
     }
 
     const { data, error: insertError } = await supabase
       .from('pins')
-      .insert({ lat: latlng.lat, lng: latlng.lng, title, comment, photo_url })
+      .insert({ user_id: uid, lat: latlng.lat, lng: latlng.lng, title, comment, photo_url })
       .select()
       .single()
 
