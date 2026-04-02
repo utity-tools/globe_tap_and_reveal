@@ -13,7 +13,7 @@ body,
 
 /* ── Leaflet container = water ───────────────────────────── */
 .leaflet-container {
-  background-color: #5B9FD4;
+  background-color: #5B9FD4 !important;
   /* Subtle horizontal wave lines on the water */
   background-image: repeating-linear-gradient(
     0deg,
@@ -32,7 +32,7 @@ body,
   overflow: hidden !important;
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.13) !important;
   margin-bottom: 20px !important;
-  margin-right: 20px !important;
+  margin-left: 20px !important;
 }
 
 .leaflet-control-zoom a {
@@ -61,7 +61,7 @@ body,
 
 /* ── Popup: warm parchment card ──────────────────────────── */
 .leaflet-popup-content-wrapper {
-  background: #F8F5EC;
+  background: #ecf2f8;
   border: 1px solid #DDD9C8;
   border-radius: 12px;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
