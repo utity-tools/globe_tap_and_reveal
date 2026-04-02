@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { MapContainer, GeoJSON, Marker, Popup, useMapEvents, useMap, ZoomControl } from 'react-leaflet'
 import type { FeatureCollection, Feature, Geometry } from 'geojson'
 import L from 'leaflet'
@@ -177,31 +177,36 @@ function MapInteractions({ onLongPress }: MapInteractionsProps) {
 // ── Main component ────────────────────────────────────────
 export default function Map() {
   const [geoData, setGeoData] = useState<FeatureCollection | null>(null)
-  const [visitedSet, setVisitedSet] = useState<Set<string>>(new Set())
   const [pins, setPins] = useState<Pin[]>([])
   const [pinForm, setPinForm] = useState<L.LatLng | null>(null)
+  const [isLoaded, setIsLoaded] = useState(false)
 
   const geoJsonRef = useRef<L.GeoJSON | null>(null)
-  const visitedRef = useRef<Set<string>>(new Set())
+  const unlockedRef = useRef<Set<string>>(new Set())
   const mapRef = useRef<L.Map | null>(null)
   const markersRef = useRef<Record<string, L.Marker>>({})
   const [ledgerOpen, setLedgerOpen] = useState(false)
 
-  // ── Sync visitedRef ───────────────────────────────────
-  useEffect(() => {
-    visitedRef.current = visitedSet
-  }, [visitedSet])
+  // ── Single source of truth: countries unlocked by pins ──
+  const unlockedCountries = useMemo(() => {
+    if (!geoData) return new Set<string>()
+    const codes = new Set<string>()
+    for (const pin of pins) {
+      const country = findCountryAtPoint(pin.lat, pin.lng, geoData)
+      if (country) codes.add(country.properties.ISO_A3)
+    }
+    return codes
+  }, [pins, geoData])
 
-  // ── Reactive restyle: fires on every pins or visitedSet change ──
+  // ── Sync ref + restyle whenever unlocked set changes ──
   useEffect(() => {
+    unlockedRef.current = unlockedCountries
     if (!geoJsonRef.current) return
-    geoJsonRef.current.setStyle(
-      (feature) => {
-        const code = (feature as CountryFeature | undefined)?.properties?.ISO_A3 ?? ''
-        return getCountryStyle(code, visitedRef.current.has(code))
-      }
-    )
-  }, [pins, visitedSet])
+    geoJsonRef.current.setStyle((feature) => {
+      const code = (feature as CountryFeature | undefined)?.properties?.ISO_A3 ?? ''
+      return getCountryStyle(code, unlockedRef.current.has(code))
+    })
+  }, [unlockedCountries])
 
   // ── Load GeoJSON ───────────────────────────────────────
   useEffect(() => {
@@ -210,20 +215,14 @@ export default function Map() {
       .then((data: FeatureCollection) => setGeoData(data))
   }, [])
 
-  // ── Load initial Supabase data ─────────────────────────
+  // ── Load initial Supabase data — pins are the only truth ─
   useEffect(() => {
-    supabase
-      .from('visited_countries')
-      .select('country_code')
-      .then(({ data }) => {
-        if (data) setVisitedSet(new Set(data.map((r) => r.country_code as string)))
-      })
-
     supabase
       .from('pins')
       .select('*')
       .then(({ data }) => {
         if (data) setPins(data as Pin[])
+        setIsLoaded(true)
       })
   }, [])
 
@@ -265,7 +264,7 @@ export default function Map() {
 
     path.on({
       mouseover: () => {
-        if (!visitedRef.current.has(code))
+        if (!unlockedRef.current.has(code))
           path.setStyle({ color: '#E55A51', weight: 1.5, opacity: 0.85 })
       },
       mouseout: () => {
@@ -278,37 +277,16 @@ export default function Map() {
   const countryStyle = useCallback(
     (feature?: Feature): L.PathOptions => {
       const code = (feature as CountryFeature | undefined)?.properties?.ISO_A3 ?? ''
-      return getCountryStyle(code, visitedRef.current.has(code))
+      return getCountryStyle(code, unlockedRef.current.has(code))
     },
     []
   )
 
-  // ── Delete pin + unvisit country if no pins remain ────
+  // ── Delete pin — useMemo recalculates unlocked countries automatically ──
   const handleDeletePin = useCallback(async (id: string) => {
-    const pin = pins.find((p) => p.id === id)
     await supabase.from('pins').delete().eq('id', id)
-    const remaining = pins.filter((p) => p.id !== id)
-    setPins(remaining)
-
-    if (pin && geoData) {
-      const country = findCountryAtPoint(pin.lat, pin.lng, geoData)
-      if (country) {
-        const code = country.properties.ISO_A3
-        const stillHasPin = remaining.some((p) => {
-          const c = findCountryAtPoint(p.lat, p.lng, geoData)
-          return c?.properties.ISO_A3 === code
-        })
-        if (!stillHasPin) {
-          await supabase.from('visited_countries').delete().eq('country_code', code)
-          setVisitedSet((prev) => {
-            const next = new Set(prev)
-            next.delete(code)
-            return next
-          })
-        }
-      }
-    }
-  }, [pins, geoData])
+    setPins((prev) => prev.filter((p) => p.id !== id))
+  }, [])
 
   return (
     <div className="relative w-full h-screen p-4" style={{ background: '#5B9FD4' }}>
@@ -350,7 +328,11 @@ export default function Map() {
 
           <ZoomControl position="bottomleft" />
           <MapController mapRef={mapRef} />
-          <MapInteractions onLongPress={setPinForm} />
+          <MapInteractions onLongPress={(latlng) => {
+            if (!geoData) return
+            if (findCountryAtPoint(latlng.lat, latlng.lng, geoData) === null) return
+            setPinForm(latlng)
+          }} />
 
           {pins.map((pin) => (
             <Marker
@@ -400,7 +382,7 @@ export default function Map() {
         />
       )}
 
-      <UserNotch unlockedCount={visitedSet.size} pinsCount={pins.length} />
+      <UserNotch unlockedCount={unlockedCountries.size} pinsCount={pins.length} isLoaded={isLoaded} />
 
       {pinForm && (
         <PinForm
@@ -409,17 +391,6 @@ export default function Map() {
           onSaved={(pin) => {
             setPins((prev) => [...prev, pin])
             setPinForm(null)
-            if (geoData) {
-              const country = findCountryAtPoint(pin.lat, pin.lng, geoData)
-              if (country) {
-                const { ISO_A3: code, ADMIN: name } = country.properties
-                if (!visitedRef.current.has(code)) {
-                  supabase.from('visited_countries').insert({ country_code: code, country_name: name })
-                  visitedRef.current = new Set([...visitedRef.current, code])
-                  setVisitedSet(new Set(visitedRef.current))
-                }
-              }
-            }
           }}
         />
       )}

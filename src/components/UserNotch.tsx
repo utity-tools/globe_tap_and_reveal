@@ -3,9 +3,10 @@ const TOTAL_COUNTRIES = 270
 interface UserNotchProps {
   unlockedCount: number
   pinsCount: number
+  isLoaded: boolean
 }
 
-export default function UserNotch({ unlockedCount, pinsCount }: UserNotchProps) {
+export default function UserNotch({ unlockedCount, pinsCount, isLoaded }: UserNotchProps) {
   const pct = Math.min((unlockedCount / TOTAL_COUNTRIES) * 100, 100)
 
   return (
@@ -37,9 +38,9 @@ export default function UserNotch({ unlockedCount, pinsCount }: UserNotchProps) 
 
         {/* Counters */}
         <span className="font-mono leading-none" style={{ fontSize: '10px', color: '#777' }}>
-          <span style={{ color: '#4FB3A9', fontWeight: 600 }}>{pinsCount}</span>
+          <span style={{ color: '#4FB3A9', fontWeight: 600 }}>{isLoaded ? pinsCount : '—'}</span>
           <span> pines · </span>
-          <span style={{ color: '#4FB3A9', fontWeight: 600 }}>{unlockedCount}</span>
+          <span style={{ color: '#4FB3A9', fontWeight: 600 }}>{isLoaded ? unlockedCount : '—'}</span>
           <span> / {TOTAL_COUNTRIES} países</span>
         </span>
       </div>
